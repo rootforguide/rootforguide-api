@@ -1145,8 +1145,8 @@
   </section>
 
   <section class="national-ticker" id="upsetsSection" style="display:none;">
-    <h2 class="national-ticker-title">Major Upsets</h2>
-    <p class="national-ticker-sub">Real results, but no scores shown here — just a heads-up that something worth seeing happened.</p>
+    <h2 class="national-ticker-title">Upsets</h2>
+    <p class="national-ticker-sub">Any real favorite that actually lost, not just the big ones — no scores shown here, just a heads-up that something worth seeing happened.</p>
     <div id="upsetsList"></div>
   </section>
   </div>
@@ -2251,6 +2251,7 @@ function persistSavedGames(games){
   try { localStorage.setItem('cg_saved_games', JSON.stringify(games)); } catch(e){}
 }
 const SAVED_GAME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const WATCHED_CLICK_TTL_MS = 5 * 60 * 1000; // once a saved game's highlights link is actually clicked, remove it 5 minutes later regardless of the 7-day window above
 let savedGames = loadSavedGames(); // array, in custom/drag order
 pruneExpiredSavedGames();
 let savedSortMode = 'gamegravity'; // 'gamegravity' | 'chronological' | 'custom' -- matches the display order of the sort buttons
@@ -2351,7 +2352,11 @@ function pruneExpiredSavedGames(){
   // moment this code first runs.
   let touched = false;
   savedGames.forEach(g => { if (!g.savedAt){ g.savedAt = now; touched = true; } });
-  savedGames = savedGames.filter(g => (now - g.savedAt) < SAVED_GAME_TTL_MS);
+  savedGames = savedGames.filter(g => {
+    if ((now - g.savedAt) >= SAVED_GAME_TTL_MS) return false; // 7 days since saving, regardless of clicks
+    if (g.watchedAt && (now - g.watchedAt) >= WATCHED_CLICK_TTL_MS) return false; // 5 minutes since the highlights link was actually clicked
+    return true;
+  });
   if (savedGames.length !== before || touched) persistSavedGames(savedGames);
 }
 // Tracks which highlights/watch links have actually been clicked, so
@@ -2391,6 +2396,22 @@ document.addEventListener('click', (e) => {
   if (!a) return;
   markLinkWatched(a.dataset.link);
   a.classList.add('watched');
+  // If this link belongs to a saved game, start a 5-minute countdown
+  // to auto-remove it from Saved -- on top of the existing 7-day
+  // expiry from when it was originally saved. The assumption is that
+  // clicking through to highlights means the visitor is done with it.
+  const matchingSaved = savedGames.find(g => g.link === a.dataset.link);
+  if (matchingSaved && !matchingSaved.watchedAt){
+    matchingSaved.watchedAt = Date.now();
+    persistSavedGames(savedGames);
+    // If the Saved tab happens to be open right now, make sure the
+    // game actually disappears from view at the 5-minute mark instead
+    // of only being cleaned up the next time the tab is opened.
+    setTimeout(() => {
+      const panel = document.getElementById('panelSaved');
+      if (panel && panel.style.display !== 'none') renderSavedTab();
+    }, WATCHED_CLICK_TTL_MS + 500);
+  }
 });
 const BOOKMARK_ICON_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>';
 const BOOKMARK_ICON_FILLED_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>';
@@ -2463,9 +2484,9 @@ function renderSavedTab(){
     const save = saveGameButton(g.key, g);
     const dragHandle = (savedSortMode === 'custom') ? '<span class="drag-handle" title="Drag to reorder">⠿</span> ' : '';
     // Same status badge the Game Gravity view uses ("Likely live now" /
-    // "Likely final -- check for highlights") -- without this, someone
-    // could click a highlights link before the game's even over and
-    // find nothing there yet, with no indication that was expected.
+    // "Likely final") -- without this, someone could click a
+    // highlights link before the game's even over and find nothing
+    // there yet, with no indication that was expected.
     const status = renderStatusBadge(g.kickoffUTC);
     row.innerHTML = `
       <span class="matchup-text">${dragHandle}${g.awayRank ? '#' + g.awayRank + ' ' : ''}${g.away} @ ${g.homeRank ? '#' + g.homeRank + ' ' : ''}${g.home}</span>
@@ -2516,7 +2537,7 @@ function watchAllSaved(){
 function renderStatusBadge(kickoffUTC){
   const status = gameLiveStatus(kickoffUTC);
   if (status === 'live') return `<span class="status-badge live">🔴 Likely live now</span>`;
-  if (status === 'likely-final') return `<span class="status-badge final">Likely final — check for highlights</span>`;
+  if (status === 'likely-final') return `<span class="status-badge final">Likely final</span>`;
   return '';
 }
 
@@ -2764,7 +2785,10 @@ function isUpsetGame(g){
   if (g.home_score === null || g.home_score === undefined || g.away_score === null || g.away_score === undefined) return false;
   if (!g.favoredTeam || g.winProb === null || g.winProb === undefined) return false;
   const winner = g.home_score > g.away_score ? g.home : g.away;
-  return winner !== g.favoredTeam && g.winProb >= 0.75; // a real favorite actually lost
+  // ANY real favorite losing counts -- not just a heavy (75%+) one.
+  // winProb > 0.5 is the minimum bar for "there was a real favorite
+  // at all"; anything below that was a toss-up, not an upset.
+  return winner !== g.favoredTeam && g.winProb > 0.5;
 }
 
 // "Last Week" column: ranked-vs-ranked matchups are shown either way
@@ -3088,17 +3112,20 @@ function renderUpsets(data){
   }
   section.style.display = ''; // always present -- no full-section hide/show based on spoilers, to avoid the rest of the page jumping around
   if (!showScores){
-    list.innerHTML = '<p class="empty-note">Turn on spoilers to see this week\'s upsets.</p>';
+    list.innerHTML = '<p class="empty-note">Turn on spoilers to see upsets.</p>';
     return;
   }
-  const upsets = data.games.filter(g => {
-    if (g.home_score === null || g.home_score === undefined || g.away_score === null || g.away_score === undefined) return false;
-    if (!g.favoredTeam || g.winProb === null || g.winProb === undefined) return false;
-    const winner = g.home_score > g.away_score ? g.home : g.away;
-    return winner !== g.favoredTeam && g.winProb >= 0.75; // a real favorite actually lost
+  // De-duplicated by game_id -- last-week and current-week fetches
+  // could both include the same game right at the boundary.
+  const seen = new Set();
+  const uniqueGames = data.games.filter(g => {
+    if (seen.has(g.game_id)) return false;
+    seen.add(g.game_id);
+    return true;
   });
+  const upsets = uniqueGames.filter(isUpsetGame);
   if (upsets.length === 0){
-    list.innerHTML = '<p class="empty-note">No major upsets last week.</p>';
+    list.innerHTML = '<p class="empty-note">No upsets yet.</p>';
     return;
   }
   list.innerHTML = '';
@@ -3114,6 +3141,7 @@ function renderUpsets(data){
 }
 
 let _lastWeekData = null;
+let _currentWeekData = null;
 let _lastLastNextKey = null;
 async function refreshLastNextWeek(){
   const section = document.getElementById('lastNextSection');
@@ -3123,21 +3151,32 @@ async function refreshLastNextWeek(){
     _lastLastNextKey = key;
     try {
       const prevWeek = WEEK - 1;
-      const [lastData, nextData] = await Promise.all([
+      const [lastData, currentWeekData, nextData] = await Promise.all([
         prevWeek >= 0 ? fetchNationalRankedGames(selectedSeason, prevWeek) : Promise.resolve({ games: [] }),
+        fetchNationalRankedGames(selectedSeason, WEEK), // needed so an upset that already finished THIS week (not just last week) shows up without waiting for the week to roll over
         fetchNationalRankedGames(selectedSeason, WEEK + 1)
       ]);
       if (key !== `${selectedSeason}-${WEEK}`) return; // stale by the time it resolved
       _lastWeekData = lastData;
+      _currentWeekData = currentWeekData;
       section.style.display = '';
       renderLastWeekColumn(lastData);
       renderNextWeekColumn(nextData);
     } catch (err) {
       section.style.display = 'none';
       _lastWeekData = null;
+      _currentWeekData = null;
     }
   }
-  renderUpsets(_lastWeekData);
+  // Upsets can come from last week OR from this week's games that have
+  // already finished (a Thursday-night upset shouldn't have to wait
+  // until next week to show up) -- combined here rather than only
+  // ever looking at last week's data.
+  const combinedGames = [
+    ...((_lastWeekData && _lastWeekData.games) || []),
+    ...((_currentWeekData && _currentWeekData.games) || [])
+  ];
+  renderUpsets({ games: combinedGames });
 }
 
 async function render(){
