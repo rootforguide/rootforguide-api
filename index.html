@@ -1116,15 +1116,15 @@
       <table class="top25-table">
         <thead>
           <tr>
-            <th>Rk</th><th>Colley <span class="info-icon" id="colleyInfoIcon" tabindex="0" role="button" aria-label="What is the Colley Matrix?" title="A math-only ranking based purely on who beat whom — no opinions, no polls involved.">i</span></th><th>Team</th><th>Record</th><th>Trend</th><th>Last</th><th>Next</th>
+            <th>Rk</th><th>Colley <span class="info-icon" id="colleyInfoIcon" tabindex="0" role="button" aria-label="What is the Colley Matrix?" title="A ranking based only on what happened between the lines — who beat whom, nothing else.">i</span></th><th>Team</th><th>Record</th><th>Trend</th><th>Last</th><th>Next</th>
           </tr>
         </thead>
         <tbody id="top25Body"></tbody>
       </table>
     </div>
     <div class="info-popover" id="colleyInfoPopover" style="display:none;">
-      <p class="popover-simple"><strong>In simple terms:</strong> a computer ranking based purely on who beat whom — no humans, no opinions, no polls involved.</p>
-      The Colley Matrix ranks teams from wins and losses alone — a real network of who's beaten whom, nothing else. It never sees margin of victory, injuries, or a team's reputation; a 1-point win counts exactly the same as a 40-point blowout. Strength of schedule isn't guessed at or assigned by anyone — it emerges purely from how each team's results connect to everyone else's, and that network only gets stronger as more real games are played. Early in a season, with few connections between teams, it can disagree with the human poll a lot — that's the method being honest about how little evidence it has yet, not a flaw to explain away. Unlike the AP poll, it isn't tied to a weekly human vote — it updates as soon as any game actually finishes, even mid-week, so it can shift before the poll itself does.
+      <p class="popover-simple"><strong>In simple terms:</strong> a ranking based only on what actually happened between the lines — who beat whom, nothing else.</p>
+      The Colley Matrix ranks teams from wins and losses alone — a real network of who's beaten whom, based only on the final score, nothing else. It never factors in injuries, a team's reputation, or what anyone expected going in — only what actually happened on the field. Margin doesn't matter either; a 1-point win counts exactly the same as a 40-point blowout. Strength of schedule isn't guessed at or assigned by anyone — it emerges purely from how each team's real results connect to everyone else's, and that network only gets stronger as more games are actually played. Early in a season, with few connections between teams, it can disagree with the human poll a lot — that's the method being honest about how little evidence it has yet, not a flaw to explain away. Unlike the AP poll, it isn't tied to a weekly human vote — it updates as soon as any game actually finishes, even mid-week, so it can shift before the poll itself does.
     </div>
   </section>
   </div>
@@ -2207,10 +2207,18 @@ function switchTab(tabName){
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => switchTab(btn.dataset.tab));
 });
-document.getElementById('colleyInfoIcon').addEventListener('click', (e) => {
-  e.stopPropagation();
+document.addEventListener('click', (e) => {
+  const icon = e.target.closest && e.target.closest('#colleyInfoIcon');
   const pop = document.getElementById('colleyInfoPopover');
-  pop.style.display = pop.style.display === 'none' ? '' : 'none';
+  if (icon){
+    e.stopPropagation();
+    pop.style.display = pop.style.display === 'none' ? '' : 'none';
+    return;
+  }
+  // Click anywhere else closes it, same as any other popover on the site.
+  if (pop && pop.style.display !== 'none' && !e.target.closest('#colleyInfoPopover')){
+    pop.style.display = 'none';
+  }
 });
 document.getElementById('colleyInfoIcon').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' || e.key === ' ') document.getElementById('colleyInfoIcon').click();
