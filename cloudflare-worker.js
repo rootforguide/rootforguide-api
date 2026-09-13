@@ -609,12 +609,19 @@ if (!team && mode === "currentweek") {
           return {
             rank: entry.rank, school, wins, losses,
             trend, colleyRank: colleyRankOf[school] || null,
-            lastGame, nextGame
+            lastGame, nextGame, prevRank: prevRank ?? null
           };
         });
 
         const top25Body = JSON.stringify({ year, week, pollSource: pollSource(week), top25, _dataWarning: currentPollResult.warning || undefined });
-        const top25Response = new Response(top25Body, { headers: { ...corsHeaders(), "Cache-Control": "public, max-age=10800" } });
+        // Shortened from 3 hours to 20 minutes -- the Colley rank in
+        // this response is meant to reflect games as they finish, not
+        // just once a week. A 3-hour cache was undermining that: a
+        // game could finish and still not show up in Colley for up to
+        // 3 hours. 20 minutes is a real tradeoff against CFBD's free
+        // quota (1000 calls/month), not free freshness -- if traffic
+        // grows enough to matter, this is the first knob to revisit.
+        const top25Response = new Response(top25Body, { headers: { ...corsHeaders(), "Cache-Control": "public, max-age=1200" } });
         ctx.waitUntil(top25Cache.put(top25CacheKey, top25Response.clone()));
         return top25Response;
       } catch (err) {
