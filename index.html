@@ -1175,7 +1175,6 @@
     </span>
   </div>
 
-  <div class="pinned-row" id="pinnedRow"></div>
   <p class="share-note" id="shareNote"></p>
 
   <div class="team-snapshot" id="teamSnapshot"></div>
@@ -1190,7 +1189,10 @@
   <p class="share-note-bottom" id="shareNoteBottom"></p>
   </div>
 
-  <div class="picker">
+  <div id="pickerAndPinned">
+  <div class="pinned-row" id="pinnedRow"></div>
+
+  <div class="picker" id="pickerBlock">
     <p class="field-label">Conference</p>
     <select id="conferenceSelect"></select>
 
@@ -1199,6 +1201,7 @@
 
     <p class="field-label" style="margin-top:20px;">Season</p>
     <select id="seasonSelect"></select>
+  </div>
   </div>
 
   <section class="suggestion-box">
@@ -2136,6 +2139,21 @@ const defaultConference = conferenceOf(defaultTeam) || "Big 12";
 conferenceSelect.value = defaultConference;
 populateTeams(defaultConference);
 teamSelect.value = defaultTeam;
+
+// When nobody has a favorited team yet, there's no real "default" to
+// show content for -- showing an arbitrary team's picks (whatever the
+// fallback happens to be) first isn't useful to a first-time visitor.
+// In that case only, the Conference/Team/Season picker moves back up
+// to the top so they can choose a team before seeing any content;
+// once they have a favorite, it moves to its normal spot at the
+// bottom (a "change team" control, not a gate).
+if (!firstFavoritedTeam()){
+  const wrapper = document.getElementById('pickerAndPinned');
+  const tabNav = document.getElementById('tabNav');
+  if (wrapper && tabNav && tabNav.parentNode){
+    tabNav.parentNode.insertBefore(wrapper, tabNav);
+  }
+}
 
 conferenceSelect.addEventListener('change', () => {
   populateTeams(conferenceSelect.value);
