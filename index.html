@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RootForGuide — Know who to root for</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2214%22%20fill%3D%22%230A2557%22/%3E%3Ctext%20x%3D%2232%22%20y%3D%2246%22%20font-family%3D%22Arial%2C%20Helvetica%2C%20sans-serif%22%20font-weight%3D%22900%22%20font-size%3D%2240%22%20fill%3D%22%23D6202E%22%20text-anchor%3D%22middle%22%20stroke%3D%22%23F7F5F0%22%20stroke-width%3D%221.5%22%20paint-order%3D%22stroke%20fill%22%3ER%3C/text%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2214%22%20fill%3D%22%230A2557%22/%3E%3Ctext%20x%3D%2232%22%20y%3D%2246%22%20font-family%3D%22Arial%2C%20Helvetica%2C%20sans-serif%22%20font-weight%3D%22900%22%20font-size%3D%2240%22%20fill%3D%22%23D6202E%22%20text-anchor%3D%22middle%22%20stroke%3D%22%23F7F5F0%22%20stroke-width%3D%221.5%22%20paint-order%3D%22stroke%20fill%22%3ER%3C/text%3E%3C/svg%3E">
 <!-- CSP removed from this file on purpose: frame-ancestors doesn't
      work via a <meta> tag at all (real spec limitation, HTTP-header-
      only), and the rest of a strict CSP here breaks in-chat/sandboxed
@@ -756,6 +758,11 @@
   .result-badge{ font-weight:800; padding:1px 5px; border-radius:3px; margin-right:3px; }
   .result-badge.win{ color:#4ade80; background:rgba(74,222,128,0.12); }
   .result-badge.loss{ color:#f87171; background:rgba(248,113,113,0.12); }
+  .saved-gg-score{
+    font-weight:800;
+    color:var(--amber);
+    margin-right:4px;
+  }
   .cal-btn, .share-game-btn{
     display:inline-block;
     cursor:pointer;
@@ -2488,9 +2495,14 @@ function renderSavedTab(){
     // highlights link before the game's even over and find nothing
     // there yet, with no indication that was expected.
     const status = renderStatusBadge(g.kickoffUTC);
+    // Shows the actual Game Gravity score when one was captured (only
+    // games saved from the Game Gravity view have one) -- otherwise
+    // the "Game Gravity" sort mode reorders the list with no visible
+    // number explaining why, which reads as arbitrary.
+    const ggScore = (g.score !== null && g.score !== undefined) ? `<span class="saved-gg-score">${Math.round(g.score)} GG<span class="tm">™</span></span> ` : '';
     row.innerHTML = `
       <span class="matchup-text">${dragHandle}${g.awayRank ? '#' + g.awayRank + ' ' : ''}${g.away} @ ${g.homeRank ? '#' + g.homeRank + ' ' : ''}${g.home}</span>
-      <span class="game-meta">${formatKickoff(g.kickoffUTC, g.home)}${g.network ? ' · ' + g.network : ''} ${status}${highlightsLink}${save}</span>
+      <span class="game-meta">${ggScore}${formatKickoff(g.kickoffUTC, g.home)}${g.network ? ' · ' + g.network : ''} ${status}${highlightsLink}${save}</span>
     `;
     list.appendChild(row);
   });
@@ -2597,7 +2609,7 @@ function renderWatch(r, team, showScores){
     return `${kickoffLine}
     <div class="watch-row">
       <span class="watch-icon">✓</span>
-      <span class="watch-text final-score">FINAL: ${r.away} ${r.away_score} – ${r.home_score} ${r.home}</span>${save}
+      <span class="watch-text final-score">FINAL: ${r.away} ${r.away_score} – ${r.home_score} ${r.home}</span> ${highlightsLinkHtml(r.link, 'Highlights →')}${save}
     </div>`;
   }
   if (showScores && !hasFinalScore){
