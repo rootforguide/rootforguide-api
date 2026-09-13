@@ -753,6 +753,19 @@
   .save-game-btn:hover{ opacity:1; background:var(--panel-line); }
   .save-game-btn.saved{ opacity:1; color:var(--amber); }
   .highlights-link.watched{ color:var(--chalk-dim); opacity:0.75; }
+  .result-badge{ font-weight:800; padding:1px 5px; border-radius:3px; margin-right:3px; }
+  .result-badge.win{ color:#4ade80; background:rgba(74,222,128,0.12); }
+  .result-badge.loss{ color:#f87171; background:rgba(248,113,113,0.12); }
+  .cal-btn, .share-game-btn{
+    display:inline-block;
+    cursor:pointer;
+    text-decoration:none;
+    padding:1px 4px;
+    border-radius:4px;
+    opacity:0.6;
+    color:inherit;
+  }
+  .cal-btn:hover, .share-game-btn:hover{ opacity:1; background:var(--panel-line); }
   .highlights-link.watched::before{ content:"✓ "; color:#4ade80; }
   .saved-controls{
     display:flex;
@@ -2254,6 +2267,69 @@ let savedSortMode = 'gamegravity'; // 'gamegravity' | 'chronological' | 'custom'
 // away for that game -- sorting means the order passed in never
 // matters, only the pair of teams does.
 function gameSaveKey(teamA, teamB){ return [teamA, teamB].sort().join('@'); }
+// One shared, consistently-colored W/L badge (green win, red loss) for
+// anywhere a team's own result is shown -- was previously just plain
+// "W"/"L" text in some views and missing entirely in others.
+function resultBadge(won){ return `<span class="result-badge ${won ? 'win' : 'loss'}">${won ? 'W' : 'L'}</span>`; }
+
+// A downloadable .ics calendar file for a single game -- the
+// universal standard, so it works with any calendar app (Apple,
+// Google, Outlook, etc.), not just one. Built as a data URI so it
+// needs no server round-trip; clicking it just downloads the file.
+function buildIcsDataUri(awayTeam, homeTeam, kickoffUTC, network){
+  if (!kickoffUTC) return null;
+  const start = new Date(kickoffUTC);
+  if (isNaN(start.getTime())) return null;
+  const end = new Date(start.getTime() + 3.5 * 60 * 60 * 1000); // typical game length as a reasonable block
+  const fmt = (d) => d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+  const escapeIcs = (s) => String(s).replace(/[,;]/g, '\\$&');
+  const title = escapeIcs(`${awayTeam} @ ${homeTeam}`);
+  const desc = escapeIcs(network ? `Watch on ${network}` : 'College football');
+  const ics = [
+    'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//RootForGuide//EN', 'BEGIN:VEVENT',
+    `UID:${start.getTime()}-${title.replace(/\s/g,'')}@rootforguide.com`,
+    `DTSTAMP:${fmt(new Date())}`, `DTSTART:${fmt(start)}`, `DTEND:${fmt(end)}`,
+    `SUMMARY:${title}`, `DESCRIPTION:${desc}`, 'END:VEVENT', 'END:VCALENDAR'
+  ].join('\r\n');
+  return `data:text/calendar;charset=utf8,${encodeURIComponent(ics)}`;
+}
+const CALENDAR_ICON_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>';
+function calendarButtonHtml(awayTeam, homeTeam, kickoffUTC, network){
+  const uri = buildIcsDataUri(awayTeam, homeTeam, kickoffUTC, network);
+  if (!uri) return ''; // no kickoff time (TBA) -- nothing to add yet
+  const filename = `${awayTeam}-vs-${homeTeam}`.replace(/[^a-z0-9-]/gi, '');
+  return ` <a href="${uri}" download="${filename}.ics" class="cal-btn" title="Add to calendar">${CALENDAR_ICON_SVG}</a>`;
+}
+
+const SHARE_ICON_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.6" y1="10.5" x2="15.4" y2="6.5"/><line x1="8.6" y1="13.5" x2="15.4" y2="17.5"/></svg>';
+// Per-game share, reusing the exact same share/copy mechanism as the
+// team-wide share button (native share sheet, falling back to
+// clipboard), just with a single game's text instead of a full list.
+function shareGameButton(awayTeam, homeTeam, kickoffUTC, network){
+  const text = `${awayTeam} @ ${homeTeam}${kickoffUTC ? ' — ' + formatKickoff(kickoffUTC, homeTeam) : ''}${network ? ' on ' + network : ''}\nrootforguide.com`;
+  const safeText = text.replace(/"/g, '&quot;');
+  return ` <span class="share-game-btn" data-share-text="${safeText}" title="Share this game">${SHARE_ICON_SVG}</span>`;
+}
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest && e.target.closest('.share-game-btn');
+  if (!btn) return;
+  const text = btn.dataset.shareText;
+  const hasShare = typeof navigator !== 'undefined' && navigator.share;
+  const hasClipboard = typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText;
+  const flashCopied = () => {
+    const original = btn.innerHTML;
+    btn.textContent = '✓';
+    setTimeout(() => { btn.innerHTML = original; }, 1500);
+  };
+  if (hasShare){
+    navigator.share({ title: 'RootForGuide.com', text }).catch((err) => {
+      if (err && err.name === 'AbortError') return;
+      if (hasClipboard) navigator.clipboard.writeText(text).then(flashCopied);
+    });
+    return;
+  }
+  if (hasClipboard) navigator.clipboard.writeText(text).then(flashCopied);
+});
 function isGameSaved(gameKey){ return savedGames.some(g => g.key === gameKey); }
 function toggleSavedGame(gameKey, gameData){
   const idx = savedGames.findIndex(g => g.key === gameKey);
@@ -2732,9 +2808,13 @@ function renderLastWeekColumn(data){
     // "Watch free, spoiler-safe" links); only the score stays gated.
     const highlightsLink = highlightsLinkHtml(g.link, 'Highlights →');
     const save = saveGameButton(gameSaveKey(g.away, g.home), { away:g.away, home:g.home, kickoffUTC:g.kickoffUTC, link:g.link, network:g.network, score:null, awayRank:g.awayRank ?? null, homeRank:g.homeRank ?? null });
+    // Pre-game odds -- no spoiler concern (the line existed before
+    // kickoff), shown regardless of the toggle, same as everywhere
+    // else these appear.
+    const oddsText = g.favoredTeam && g.winProb ? `<span class="odds">${g.favoredTeam} ${Math.round(g.winProb * 100)}% to win</span> ` : '';
     const scorePart = (showScores && hasScore)
-      ? `<span class="game-meta">${g.away_score}-${g.home_score} ${highlightsLink}${save}</span>`
-      : `<span class="game-meta">${peek}${peek ? ' ' : ''}${highlightsLink}${save}</span>`;
+      ? `<span class="game-meta">${oddsText}${g.away_score}-${g.home_score} ${highlightsLink}${save}</span>`
+      : `<span class="game-meta">${oddsText}${peek}${peek ? ' ' : ''}${highlightsLink}${save}</span>`;
     row.innerHTML = `<span class="matchup-text">${doubleRanked ? '<span class="game-tag ranked">Ranked Matchup</span>' : ''}${awayLabel} @ ${homeLabel}</span>${scorePart}`;
     list.appendChild(row);
   });
@@ -2766,9 +2846,10 @@ function renderNextWeekColumn(data){
     row.className = 'national-game-row stacked' + (doubleRanked ? ' double-ranked' : '');
     const awayLabel = (g.awayRank ? `#${g.awayRank} ` : '') + g.away;
     const homeLabel = (g.homeRank ? `#${g.homeRank} ` : '') + g.home;
+    const oddsText = g.favoredTeam && g.winProb ? `${g.favoredTeam} ${Math.round(g.winProb * 100)}% to win` : '';
     row.innerHTML = `
       <span class="matchup-text">${doubleRanked ? '<span class="game-tag ranked">Ranked Matchup</span>' : ''}${awayLabel} @ ${homeLabel}</span>
-      <span class="game-meta">${formatKickoff(g.kickoffUTC, g.home)}${g.network ? ' · ' + g.network : ''}</span>
+      <span class="game-meta">${formatKickoff(g.kickoffUTC, g.home)}${g.network ? ' · ' + g.network : ''}${oddsText ? ` · <span class="odds">${oddsText}</span>` : ''}</span>
     `;
     list.appendChild(row);
   });
@@ -2800,7 +2881,7 @@ function trendCell(trend){
 function gameCell(g, forOpponentLabel, teamName, teamRank){
   if (!g) return '—';
   if (forOpponentLabel === 'last') {
-    const verb = g.result === 'beat' ? 'W' : 'L';
+    const verb = resultBadge(g.result === 'beat');
     // No overtime-timing risk to guard here (unlike same-week games) --
     // this is always a PRIOR week's result by definition, so a peek
     // button can show unconditionally once the row itself is real.
@@ -2936,9 +3017,36 @@ function renderSchedule(data, team){
     const awayRank = g.home ? (g.oppRank ?? null) : null; // the schedule view only knows the OPPONENT's rank, not this team's own -- the other side stays unlabeled rather than guessed at
     const homeRank = g.home ? null : (g.oppRank ?? null);
     const save = saveGameButton(gameSaveKey(awayTeam, homeTeam), { away:awayTeam, home:homeTeam, kickoffUTC:g.kickoffUTC, link:g.link, network:null, score:null, awayRank, homeRank });
+    // A colored W/L badge for this team's own result, once there is
+    // one -- this used to be missing entirely from the season
+    // schedule. Prior weeks are always safe to reveal outright (same
+    // reasoning as "Last Game" elsewhere); a game from the CURRENT
+    // week that's already finished still respects the spoiler toggle,
+    // falling back to the same hold-to-peek pattern used everywhere
+    // else on the site.
+    const hasScore = g.home_score !== null && g.home_score !== undefined && g.away_score !== null && g.away_score !== undefined;
+    let resultPart = '';
+    if (hasScore){
+      const teamScore = g.home ? g.home_score : g.away_score;
+      const oppScore = g.home ? g.away_score : g.home_score;
+      const won = teamScore > oppScore;
+      if (g.week < WEEK || showScores){
+        resultPart = resultBadge(won) + ' ';
+      } else {
+        resultPart = quickPeekButton(awayTeam, g.away_score, homeTeam, g.home_score, g.kickoffUTC) + ' ';
+      }
+    }
+    // Betting odds -- these are PRE-game info (the line existed before
+    // the game happened), so unlike the result itself, there's no
+    // spoiler concern showing this regardless of week or the toggle.
+    // Same "TeamName XX% to win" format used in the Game Gravity view,
+    // for consistency. Was missing entirely from this view before.
+    const oddsText = g.favoredTeam && g.winProb
+      ? `${g.favoredTeam} ${Math.round(g.winProb * 100)}% to win`
+      : '';
     row.innerHTML = `
-      <span class="matchup-text">${tags}${matchupText}</span>
-      <span class="game-meta">Wk ${g.week} · ${formatKickoff(g.kickoffUTC, team)} ${highlightsLinkHtml(g.link, 'Highlights →')}${save}</span>
+      <span class="matchup-text">${resultPart}${tags}${matchupText}</span>
+      <span class="game-meta">Wk ${g.week} · ${formatKickoff(g.kickoffUTC, team)} ${oddsText ? `<span class="odds">${oddsText}</span> ` : ''}${highlightsLinkHtml(g.link, 'Highlights →')}${save}${calendarButtonHtml(awayTeam, homeTeam, g.kickoffUTC, g.network)}${shareGameButton(awayTeam, homeTeam, g.kickoffUTC, g.network)}</span>
     `;
     list.appendChild(row);
   });
