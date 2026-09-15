@@ -43,7 +43,7 @@
  */
 
 const CFBD_BASE = "https://api.collegefootballdata.com";
-const ALLOWED_ORIGIN = "https://rootforguide.com";
+const ALLOWED_ORIGINS = ["https://rootforguide.com", "https://zerospoilerhighlights.com", "https://www.zerospoilerhighlights.com"];
 const TOTAL_SEASON_WEEKS = 14;
 const CFP_START_WEEK = 10;
 
@@ -96,9 +96,9 @@ async function cfbdFetch(env, path, params) {
   return res.json();
 }
 
-function corsHeaders() {
+function corsHeaders(origin) {
   return {
-    "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
+    "Access-Control-Allow-Origin": ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0],
     "Access-Control-Allow-Methods": "GET, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Content-Type": "application/json"
@@ -442,7 +442,8 @@ function scoreWeekServerSide(team, year, week, weekGames, weekLines, pollRanks, 
 
 export default {
   async fetch(request, env, ctx) {
-    if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders() });
+    const allowOrigin = request.headers.get("Origin");
+    if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders(allowOrigin) });
 
     const url = new URL(request.url);
     const team = url.searchParams.get("team");
@@ -501,11 +502,11 @@ if (!team && mode === "currentweek") {
         // Cached for 1 hour, not 24 -- this one genuinely changes as
         // the days pass, unlike the per-week data which is stable
         // for the whole week once computed.
-        const cwResponse = new Response(cwBody, { headers: { ...corsHeaders(), "Cache-Control": "public, max-age=3600" } });
+        const cwResponse = new Response(cwBody, { headers: { ...corsHeaders(allowOrigin), "Cache-Control": "public, max-age=3600" } });
         ctx.waitUntil(cwCache.put(cwCacheKey, cwResponse.clone()));
         return cwResponse;
       } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), { status: 502, headers: corsHeaders() });
+        return new Response(JSON.stringify({ error: String(err) }), { status: 502, headers: corsHeaders(allowOrigin) });
       }
     }
 
@@ -621,11 +622,11 @@ if (!team && mode === "currentweek") {
         // 3 hours. 20 minutes is a real tradeoff against CFBD's free
         // quota (1000 calls/month), not free freshness -- if traffic
         // grows enough to matter, this is the first knob to revisit.
-        const top25Response = new Response(top25Body, { headers: { ...corsHeaders(), "Cache-Control": "public, max-age=1200" } });
+        const top25Response = new Response(top25Body, { headers: { ...corsHeaders(allowOrigin), "Cache-Control": "public, max-age=1200" } });
         ctx.waitUntil(top25Cache.put(top25CacheKey, top25Response.clone()));
         return top25Response;
       } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), { status: 502, headers: corsHeaders() });
+        return new Response(JSON.stringify({ error: String(err) }), { status: 502, headers: corsHeaders(allowOrigin) });
       }
     }
 
@@ -677,11 +678,11 @@ if (!team && mode === "currentweek") {
         }).sort((a, b) => a.week - b.week);
 
         const scheduleBody = JSON.stringify({ team, year, schedule });
-        const scheduleResponse = new Response(scheduleBody, { headers: { ...corsHeaders(), "Cache-Control": "public, max-age=10800" } });
+        const scheduleResponse = new Response(scheduleBody, { headers: { ...corsHeaders(allowOrigin), "Cache-Control": "public, max-age=10800" } });
         ctx.waitUntil(scheduleCache.put(scheduleCacheKey, scheduleResponse.clone()));
         return scheduleResponse;
       } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), { status: 502, headers: corsHeaders() });
+        return new Response(JSON.stringify({ error: String(err) }), { status: 502, headers: corsHeaders(allowOrigin) });
       }
     }
 
@@ -730,11 +731,11 @@ if (!team && mode === "currentweek") {
           .sort((a, b) => new Date(a.kickoffUTC) - new Date(b.kickoffUTC));
 
         const nationalBody = JSON.stringify({ year, week, games, pollSource: pollSource(week) });
-        const nationalResponse = new Response(nationalBody, { headers: { ...corsHeaders(), "Cache-Control": "public, max-age=10800" } });
+        const nationalResponse = new Response(nationalBody, { headers: { ...corsHeaders(allowOrigin), "Cache-Control": "public, max-age=10800" } });
         ctx.waitUntil(nationalCache.put(nationalCacheKey, nationalResponse.clone()));
         return nationalResponse;
       } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), { status: 502, headers: corsHeaders() });
+        return new Response(JSON.stringify({ error: String(err) }), { status: 502, headers: corsHeaders(allowOrigin) });
       }
     }
 
@@ -804,11 +805,11 @@ if (!team && mode === "currentweek") {
       // than this buys nothing (the answer is guaranteed identical
       // until next week) and just burns API quota. This length is a
       // caching choice, not a data-freshness one.
-      const response = new Response(body, { headers: { ...corsHeaders(), "Cache-Control": "public, max-age=10800" } });
+      const response = new Response(body, { headers: { ...corsHeaders(allowOrigin), "Cache-Control": "public, max-age=10800" } });
       ctx.waitUntil(cache.put(cacheKey, response.clone()));
       return response;
     } catch (err) {
-      return new Response(JSON.stringify({ error: String(err) }), { status: 502, headers: corsHeaders() });
+      return new Response(JSON.stringify({ error: String(err) }), { status: 502, headers: corsHeaders(allowOrigin) });
     }
   }
 };
