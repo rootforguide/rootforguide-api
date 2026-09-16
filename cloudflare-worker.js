@@ -84,16 +84,185 @@ const RIVALRIES = {
   "Houston": ["Texas Tech"], "Texas Tech": ["Houston", "Texas"]
 };
 
-async function cfbdFetch(env, path, params) {
+// ---------------------------------------------------------------------
+// ESPN fallback -- stopgap for when CFBD's call quota is exhausted
+// (free tier: 1,000 calls/month) or CFBD is briefly down. ESPN
+// publishes a public, unofficial JSON API that powers espn.com itself:
+// no API key, no documented rate limit, but also no support contract --
+// ESPN can change or block these endpoints without notice. Every
+// adapter below reshapes ESPN's response into CFBD's exact field names
+// (homeTeam, awayTeam, homePoints, awayPoints, startDate, school, rank,
+// conference, spread, ...) so every function above this section -- all
+// written against CFBD's shapes -- keeps working unchanged no matter
+// which source actually answered. cfbdFetch() below tries CFBD first,
+// every time, and only reaches for ESPN on failure.
+//
+// Known gaps, on purpose (this is a stopgap, not a rebuild):
+//  - Team name strings aren't always identical between the two
+//    providers (e.g. CFBD "Miami (FL)" vs ESPN "Miami"). Where that
+//    happens, that one team's cross-references (rivalry, resume,
+//    conference-mate lookups) quietly miss -- it degrades a game's
+//    tier/score, it doesn't error.
+//  - If one call in a Promise.all falls back to ESPN while a sibling
+//    call succeeds on CFBD (or also falls back independently), their
+//    game "id" values come from different sources and won't match --
+//    e.g. odds/lines just won't attach to a game. Also not an error,
+//    same graceful "no line data" path the app already has.
+//  - CFBD's /games and /rankings each return the WHOLE season in one
+//    response; ESPN's equivalents are one week at a time, so a
+//    "full season" fallback fans out across every regular-season week
+//    in parallel. That's real latency and Worker subrequest cost --
+//    caching (unchanged below) matters even more while this is active.
+//  - Conference data covers FBS only, sourced from ESPN's standings
+//    tree (conferences with divisions, like the Sun Belt's East/West,
+//    are flattened one level).
+// ---------------------------------------------------------------------
+
+const ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/football/college-football";
+const ESPN_STANDINGS_URL = "https://site.api.espn.com/apis/v2/sports/football/college-football/standings";
+const ESPN_SEASON_TYPE = { regular: 2, postseason: 3 };
+const ESPN_MAX_WEEK = 15; // matches ESPN's own regular-season calendar (confirmed live)
+
+async function espnFetch(url, params) {
+  const u = new URL(url);
+  Object.entries(params || {}).forEach(([k, v]) => {
+    if (v !== undefined && v !== null) u.searchParams.set(k, v);
+  });
+  const res = await fetch(u.toString());
+  if (!res.ok) throw new Error(`ESPN ${u.pathname} failed: ${res.status}`);
+  return res.json();
+}
+
+function espnGameToCFBDRow(ev, weekNum) {
+  const comp = ev.competitions && ev.competitions[0];
+  const competitors = (comp && comp.competitors) || [];
+  const home = competitors.find(c => c.homeAway === "home");
+  const away = competitors.find(c => c.homeAway === "away");
+  const completed = !!(comp && comp.status && comp.status.type && comp.status.type.completed);
+  const broadcast = comp && comp.broadcasts && comp.broadcasts[0] && comp.broadcasts[0].names && comp.broadcasts[0].names[0];
+  return {
+    id: ev.id,
+    week: weekNum,
+    homeTeam: home && home.team && home.team.location,
+    awayTeam: away && away.team && away.team.location,
+    homePoints: completed && home ? parseInt(home.score, 10) : null,
+    awayPoints: completed && away ? parseInt(away.score, 10) : null,
+    startDate: ev.date,
+    venue: { tv: broadcast || null },
+    _odds: comp && comp.odds && comp.odds[0] // stashed for espnLinesAsCFBD; not a CFBD /games field
+  };
+}
+
+async function espnScoreboardWeek(year, week, seasonType) {
+  const data = await espnFetch(`${ESPN_BASE}/scoreboard`, {
+    year, week, seasontype: ESPN_SEASON_TYPE[seasonType] || 2, groups: 80, limit: 200
+  });
+  return (data.events || []).map(ev => espnGameToCFBDRow(ev, week));
+}
+
+async function espnWeekRows(year, week, seasonType) {
+  if (week !== undefined && week !== null) return espnScoreboardWeek(year, week, seasonType);
+  const weeks = Array.from({ length: ESPN_MAX_WEEK }, (_, i) => i + 1);
+  const perWeek = await Promise.all(weeks.map(w => espnScoreboardWeek(year, w, seasonType)));
+  return perWeek.flat();
+}
+
+// CFBD's /games with no week returns the whole season; see espnWeekRows.
+async function espnGamesAsCFBD(year, week, team, seasonType) {
+  let rows = await espnWeekRows(year, week, seasonType);
+  rows = rows.map(({ _odds, ...row }) => row); // not part of CFBD's /games shape
+  if (team) rows = rows.filter(r => r.homeTeam === team || r.awayTeam === team);
+  return rows;
+}
+
+async function espnLinesAsCFBD(year, week, team, seasonType) {
+  let rows = await espnWeekRows(year, week, seasonType);
+  if (team) rows = rows.filter(r => r.homeTeam === team || r.awayTeam === team);
+  return rows
+    .filter(r => r._odds && typeof r._odds.spread === "number")
+    .map(r => ({ id: r.id, lines: [{ spread: String(r._odds.spread) }] }));
+}
+
+async function espnRankingsWeek(year, week) {
+  const data = await espnFetch(`${ESPN_BASE}/rankings`, week ? { year, week } : { year });
+  const ap = (data.rankings || []).find(r => r.name === "AP Top 25") || (data.rankings || [])[0];
+  if (!ap) return null;
+  const resolvedWeek = ap.occurrence ? ap.occurrence.number : week;
+  const ranks = (ap.ranks || []).map(r => ({ rank: r.current, school: r.team && r.team.location }));
+  return { week: resolvedWeek, seasonType: "regular", polls: [{ poll: "AP Top 25", ranks }] };
+}
+
+// CFBD's /rankings returns every week of the season in one array;
+// extractPollRanks() picks the exact week (falling back to the closest
+// PRIOR week if missing). Fetching every week from ESPN just to
+// replicate that would be wasteful, so this fetches only the week
+// actually asked for plus the one before it -- exactly the two weeks
+// extractPollRanks() is ever called with anywhere in this file. Pass
+// week=null/undefined (the currentweek handler does) to get ESPN's
+// latest published poll instead.
+async function espnRankingsAsCFBD(year, week) {
+  const weeksToFetch = week ? [...new Set([week, week - 1])].filter(w => w > 0) : [null];
+  const results = await Promise.all(weeksToFetch.map(w => espnRankingsWeek(year, w).catch(() => null)));
+  return results.filter(Boolean);
+}
+
+async function espnCalendarAsCFBD(year) {
+  const data = await espnFetch(`${ESPN_BASE}/scoreboard`, { groups: 80, limit: 1 });
+  const league = data.leagues && data.leagues[0];
+  const regular = ((league && league.calendar) || []).find(c => c.label === "Regular Season");
+  return ((regular && regular.entries) || []).map(e => ({
+    week: parseInt(e.value, 10),
+    seasonType: "regular",
+    startDate: e.startDate,
+    endDate: e.endDate
+  }));
+}
+
+async function espnTeamsAsCFBD(year) {
+  const data = await espnFetch(ESPN_STANDINGS_URL, { season: year });
+  const teams = [];
+  const visit = (node, confName) => {
+    if (node.standings && node.standings.entries) {
+      node.standings.entries.forEach(e => {
+        teams.push({ school: e.team.location, conference: confName || node.name, classification: "fbs" });
+      });
+    } else if (node.children) {
+      node.children.forEach(child => visit(child, confName || node.name));
+    }
+  };
+  (data.children || []).forEach(conf => visit(conf, conf.name));
+  return teams;
+}
+
+async function cfbdFetch(env, path, params, espnHint) {
   const url = new URL(CFBD_BASE + path);
   Object.entries(params).forEach(([k, v]) => {
     if (v !== undefined && v !== null) url.searchParams.set(k, v);
   });
-  const res = await fetch(url.toString(), {
-    headers: { Authorization: `Bearer ${env.CFBD_API_KEY}` }
-  });
-  if (!res.ok) throw new Error(`CFBD ${path} failed: ${res.status}`);
-  return res.json();
+  try {
+    const res = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${env.CFBD_API_KEY}` }
+    });
+    if (!res.ok) throw new Error(`CFBD ${path} failed: ${res.status}`);
+    return await res.json();
+  } catch (cfbdErr) {
+    const hint = espnHint || {};
+    const year = params.year;
+    const week = hint.week !== undefined ? hint.week : params.week;
+    const team = hint.team !== undefined ? hint.team : params.team;
+    try {
+      switch (path) {
+        case "/games": return await espnGamesAsCFBD(year, week, team, params.seasonType);
+        case "/lines": return await espnLinesAsCFBD(year, week, team, params.seasonType);
+        case "/rankings": return await espnRankingsAsCFBD(year, week);
+        case "/teams": return await espnTeamsAsCFBD(year);
+        case "/calendar": return await espnCalendarAsCFBD(year);
+        default: throw cfbdErr;
+      }
+    } catch (espnErr) {
+      throw cfbdErr; // surface the original CFBD error -- usually a more specific status than ESPN's
+    }
+  }
 }
 
 function corsHeaders(origin) {
@@ -525,7 +694,7 @@ if (!team && mode === "currentweek") {
       try {
         const [seasonGames, rankingsRaw, teamsInfo] = await Promise.all([
           cfbdFetch(env, "/games", { year, seasonType: "regular" }),
-          cfbdFetch(env, "/rankings", { year, seasonType: "regular" }),
+          cfbdFetch(env, "/rankings", { year, seasonType: "regular" }, { week }),
           cfbdFetch(env, "/teams", { year })
         ]);
 
@@ -645,7 +814,7 @@ if (!team && mode === "currentweek") {
         const [teamGames, teamLines, rankingsRaw] = await Promise.all([
           cfbdFetch(env, "/games", { year, team, seasonType: "regular" }),
           cfbdFetch(env, "/lines", { year, team, seasonType: "regular" }),
-          cfbdFetch(env, "/rankings", { year, seasonType: "regular" })
+          cfbdFetch(env, "/rankings", { year, seasonType: "regular" }, { week })
         ]);
 
         const pollRanks = extractPollRanks(rankingsRaw, week).ranks;
@@ -700,7 +869,7 @@ if (!team && mode === "currentweek") {
         const [weekGames, weekLines, rankingsRaw] = await Promise.all([
           cfbdFetch(env, "/games", { year, week, seasonType: "regular" }),
           cfbdFetch(env, "/lines", { year, week, seasonType: "regular" }),
-          cfbdFetch(env, "/rankings", { year, seasonType: "regular" })
+          cfbdFetch(env, "/rankings", { year, seasonType: "regular" }, { week })
         ]);
         const pollRanks = extractPollRanks(rankingsRaw, week).ranks;
         const rankedSet = {};
@@ -748,7 +917,7 @@ if (!team && mode === "currentweek") {
       const [weekGames, weekLines, rankingsRaw, seasonGames, teamsInfo, teamSeasonGames] = await Promise.all([
         cfbdFetch(env, "/games", { year, week, seasonType: "regular" }),
         cfbdFetch(env, "/lines", { year, week, seasonType: "regular" }),
-        cfbdFetch(env, "/rankings", { year, seasonType: "regular" }),
+        cfbdFetch(env, "/rankings", { year, seasonType: "regular" }, { week }),
         cfbdFetch(env, "/games", { year, seasonType: "regular" }), // full season, for games-played counts
         cfbdFetch(env, "/teams", { year }),
         cfbdFetch(env, "/games", { year, team, seasonType: "regular" })
