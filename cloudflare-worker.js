@@ -260,7 +260,10 @@ async function cfbdFetch(env, path, params, espnHint) {
         default: throw cfbdErr;
       }
     } catch (espnErr) {
-      throw cfbdErr; // surface the original CFBD error -- usually a more specific status than ESPN's
+      // Surface both -- knowing the CFBD failure alone (e.g. a 429) doesn't
+      // say whether the ESPN fallback was even reached, so debugging a
+      // persistent error needs to see what ESPN said too.
+      throw new Error(`${cfbdErr.message} | ESPN fallback also failed: ${espnErr.message}`);
     }
   }
 }
