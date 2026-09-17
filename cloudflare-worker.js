@@ -19,6 +19,11 @@
  * 3. Worker -> Settings -> Variables -> add ENCRYPTED secret: CFBD_API_KEY
  * 4. Deploy -- you'll get a URL like https://rootforguide-data.<you>.workers.dev
  * 5. Send me that URL and I'll wire the site's frontend to call it.
+ * 6. (Optional, for the "buzz" mode below) YouTube Data API key:
+ *    console.cloud.google.com -> new project -> enable "YouTube Data
+ *    API v3" -> Credentials -> Create API Key. Add it as ENCRYPTED
+ *    secret YOUTUBE_API_KEY next to CFBD_API_KEY above. No approval
+ *    wait like CFBD/Reddit -- the key works the moment you create it.
  *
  * Request shape:
  *   GET /?team=BYU&year=2026&week=1
@@ -29,6 +34,12 @@
  *   GET /?year=2026&week=1   (no team) -- national ranked-games mode:
  *   every game that week involving at least one ranked team, in
  *   chronological order. Response: { year, week, games, pollSource }
+ *
+ *
+ *   GET /?mode=buzz&home=X&away=Y&year=2026   -- spoiler-safe "worth
+ *   watching" signal for one already-played game, from its highlight
+ *   video's YouTube engagement. Response: { home, away, year, buzz:
+ *   { buzzScore, viewCount, likeCount, commentCount, link } | null }
  *
  * Response shape:
  *   { team, week, pollSource, lastGame, results: [ {score, tier, reason,
@@ -299,6 +310,57 @@ function buildResume(team, teamSeasonGames) {
 function watchLink(home, away, year) {
   const q = encodeURIComponent(`${away} vs ${home} condensed highlights ${year}`);
   return `https://www.youtube.com/results?search_query=${q}`;
+}
+
+const YOUTUBE_BASE = "https://www.googleapis.com/youtube/v3";
+
+async function youtubeFetch(env, path, params) {
+  const url = new URL(YOUTUBE_BASE + path);
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null) url.searchParams.set(k, v);
+  });
+  url.searchParams.set("key", env.YOUTUBE_API_KEY);
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`YouTube ${path} failed: ${res.status}`);
+  return res.json();
+}
+
+// "Buzz" -- a spoiler-safe, deliberately rough signal for how much
+// attention a FINISHED game's highlight video is getting on YouTube,
+// as a rough "worth watching" proxy. Only NUMBERS come back: view/
+// like/comment counts and one derived 0-100 buzzScore. Never the
+// video title or thumbnail -- both routinely contain or show the
+// final score (network highlight titles love "TEAM STUNS RIVAL
+// 45-10", and thumbnails often burn in a scoreboard graphic), which
+// would defeat the entire point of this site. The watch link itself
+// is fine to return -- it's the same kind of click-to-reveal link
+// watchLink() above already hands the user everywhere else on this
+// site; nothing new is exposed by a user choosing to click it.
+//
+// Quota note: YouTube's free daily quota is 10,000 units. A single
+// buzz lookup costs ~101 units (search.list=100, videos.list=1) --
+// so roughly 99 unique game lookups per day before hitting the cap.
+// This is why the route below caches hard (24h) and is meant to be
+// called once per finished game, not on every page load.
+async function highlightBuzz(env, home, away, year) {
+  const q = `${away} vs ${home} highlights ${year}`;
+  const search = await youtubeFetch(env, "/search", {
+    part: "snippet", q, type: "video", order: "relevance",
+    maxResults: 5, safeSearch: "none", videoEmbeddable: "true"
+  });
+  const items = search.items || [];
+  if (!items.length) return null;
+  const videoId = items[0].id.videoId;
+  const stats = await youtubeFetch(env, "/videos", { part: "statistics", id: videoId });
+  const s = (stats.items && stats.items[0] && stats.items[0].statistics) || {};
+  const viewCount = parseInt(s.viewCount || "0", 10);
+  const likeCount = parseInt(s.likeCount || "0", 10);
+  const commentCount = parseInt(s.commentCount || "0", 10);
+  // Log-scaled on purpose so one viral outlier doesn't blow the
+  // whole scale -- this is a buzz indicator, not a rigorous model.
+  const raw = Math.log10(viewCount + 1) * 10 + Math.log10(commentCount + 1) * 15 + Math.log10(likeCount + 1) * 8;
+  const buzzScore = Math.max(1, Math.min(100, Math.round(raw)));
+  return { buzzScore, viewCount, likeCount, commentCount, link: `https://www.youtube.com/watch?v=${videoId}` };
 }
 
 // ---------------------------------------------------------------------
@@ -681,6 +743,33 @@ if (!team && mode === "currentweek") {
         const scheduleResponse = new Response(scheduleBody, { headers: { ...corsHeaders(allowOrigin), "Cache-Control": "public, max-age=10800" } });
         ctx.waitUntil(scheduleCache.put(scheduleCacheKey, scheduleResponse.clone()));
         return scheduleResponse;
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 502, headers: corsHeaders(allowOrigin) });
+      }
+    }
+
+    if (mode === "buzz") {
+      // Spoiler-safe "worth watching" signal for one already-played
+      // game, sourced from its highlight video's YouTube engagement.
+      // GET /?mode=buzz&home=X&away=Y&year=2026
+      const home = url.searchParams.get("home");
+      const away = url.searchParams.get("away");
+      if (!home || !away) {
+        return new Response(JSON.stringify({ error: "home and away are required for mode=buzz" }), { status: 400, headers: corsHeaders(allowOrigin) });
+      }
+      const buzzCacheKey = new Request(url.toString(), request);
+      const buzzCache = caches.default;
+      const buzzCached = await buzzCache.match(buzzCacheKey);
+      if (buzzCached) return buzzCached;
+
+      try {
+        const buzz = await highlightBuzz(env, home, away, year);
+        const buzzBody = JSON.stringify({ home, away, year, buzz });
+        // Cached a full day -- this is meant to be looked up once per
+        // finished game, not refreshed live (see quota note above).
+        const buzzResponse = new Response(buzzBody, { headers: { ...corsHeaders(allowOrigin), "Cache-Control": "public, max-age=86400" } });
+        ctx.waitUntil(buzzCache.put(buzzCacheKey, buzzResponse.clone()));
+        return buzzResponse;
       } catch (err) {
         return new Response(JSON.stringify({ error: String(err) }), { status: 502, headers: corsHeaders(allowOrigin) });
       }
