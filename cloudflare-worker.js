@@ -577,8 +577,11 @@ if (!team && mode === "currentweek") {
       // real record, week-over-week trend, a Colley-matrix-computed
       // rank for comparison against the human poll, and its last/next
       // game. One heavier request than the others (needs the full
-      // season's games plus two weeks of polls), so it's cached the
-      // same 24 hours as everything else.
+      // season's games plus two weeks of polls) -- but kept on a much
+      // shorter, 5-minute cache (not the 3/24-hour ones used
+      // elsewhere), specifically so the Colley rank and records catch
+      // up quickly once games go final instead of sitting stale for
+      // hours.
       const top25CacheKey = new Request(url.toString(), request);
       const top25Cache = caches.default;
       const top25Cached = await top25Cache.match(top25CacheKey);
@@ -605,7 +608,7 @@ if (!team && mode === "currentweek") {
         // soon as any individual game finishes, even mid-week, since
         // unlike the AP poll it isn't tied to a human voting schedule
         // at all -- it's just math over whichever real results exist
-        // so far. The 3-hour cache on this endpoint (not the weekly
+        // so far. The 5-minute cache on this endpoint (not the weekly
         // poll cadence) is what actually paces how fresh this can get.
         const completedGamesSoFar = seasonGames.filter(g => g.homePoints !== null && g.homePoints !== undefined && g.awayPoints !== null && g.awayPoints !== undefined);
         const colley = colleyRatingsFull(completedGamesSoFar, teamList);
@@ -684,7 +687,7 @@ if (!team && mode === "currentweek") {
         // 3 hours. 20 minutes is a real tradeoff against CFBD's free
         // quota (1000 calls/month), not free freshness -- if traffic
         // grows enough to matter, this is the first knob to revisit.
-        const top25Response = new Response(top25Body, { headers: { ...corsHeaders(allowOrigin), "Cache-Control": "public, max-age=1200" } });
+        const top25Response = new Response(top25Body, { headers: { ...corsHeaders(allowOrigin), "Cache-Control": "public, max-age=300" } });
         ctx.waitUntil(top25Cache.put(top25CacheKey, top25Response.clone()));
         return top25Response;
       } catch (err) {
