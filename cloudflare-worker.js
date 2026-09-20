@@ -161,28 +161,11 @@ function extractPollRanks(rankingsResponse, week) {
   // match, fall back to the closest PRIOR week only (never a later
   // one, and never just "whatever's newest").
   //
-  // 5-whys note (LSU/Ole Miss showing unranked, investigated but not
-  // yet confirmed fixed -- needs live verification against the
-  // deployed Worker, not just code review):
-  //   1. Why would a genuinely-ranked team show as unranked? Because
-  //      this function found no matching poll entry for them.
-  //   2. Why would the entry be missing? Either CFBD's response
-  //      genuinely lacks them (unlikely -- confirmed ranked via
-  //      independent web search), or `week` here doesn't match
-  //      whatever week number CFBD's /rankings response actually
-  //      uses for the current poll.
-  //   3. Why would `week` be wrong? It's computed upstream from the
-  //      site's own current-week detection, which may not be in
-  //      sync with CFBD's OWN internal week numbering for polls
-  //      specifically (games and polls are not guaranteed to share
-  //      the same week-numbering convention).
-  //   4. Why would those two numbering conventions diverge? Not
-  //      confirmed -- would need a live response from CFBD's
-  //      /rankings endpoint to compare its actual `week` values
-  //      against the site's computed "current week" side by side.
-  //   5. Root cause: unconfirmed without live API access. This
-  //      comment exists so the next debugging pass starts here
-  //      instead of re-deriving all of the above from scratch.
+  // Live-verified resolved (2026 week 4): this endpoint returns all 25
+  // currently-ranked teams, including LSU and Ole Miss -- the pair
+  // originally reported missing -- with no _dataWarning. The week-
+  // matching logic below (exact match, else closest PRIOR week) was
+  // the fix. No further action needed unless it resurfaces.
   let weekData = rankingsResponse.find(r => r.week === week);
   if (!weekData) {
     const priorWeeks = rankingsResponse.filter(r => r.week < week).sort((a, b) => b.week - a.week);
@@ -513,7 +496,40 @@ export default {
     const week = parseInt(url.searchParams.get("week") || "1", 10);
     const mode = url.searchParams.get("mode");
 
-if (!team && mode === "currentweek") {
+    // Basic input validation -- this Worker's URL is public (visible in
+    // the site's own client-side JS), so anyone can call it directly,
+    // not just through the dropdown-driven UI that only ever sends real
+    // values. Every distinct (team, year, week) combination is a fresh
+    // cache miss that hits CFBD's API (1,000 calls/month, free tier),
+    // and mode=buzz hits YouTube's API (10,000 units/day, ~99 lookups).
+    // Without this check, a handful of scripted requests with junk or
+    // randomized params could exhaust either quota and break live data
+    // for every real visitor -- this isn't about sanitizing the DATA
+    // (CFBD/YouTube already only ever return real teams), it's about
+    // not paying the upstream-fetch cost for obviously-bogus input
+    // before it ever reaches those calls. Unicode letters are allowed
+    // (not ASCII-only) since some data sources spell certain schools
+    // with accented characters (e.g. "San José State").
+    const NAME_RE = /^[\p{L}\p{N} .&'()-]{1,60}$/u;
+    const YEAR_RE = /^(19|20)\d{2}$/;
+    if (!YEAR_RE.test(year)) {
+      return new Response(JSON.stringify({ error: "invalid year" }), { status: 400, headers: corsHeaders(allowOrigin) });
+    }
+    if (isNaN(week) || week < 0 || week > 20) {
+      return new Response(JSON.stringify({ error: "invalid week" }), { status: 400, headers: corsHeaders(allowOrigin) });
+    }
+    if (team !== null && !NAME_RE.test(team)) {
+      return new Response(JSON.stringify({ error: "invalid team" }), { status: 400, headers: corsHeaders(allowOrigin) });
+    }
+    if (mode === "buzz") {
+      const home = url.searchParams.get("home");
+      const away = url.searchParams.get("away");
+      if ((home && !NAME_RE.test(home)) || (away && !NAME_RE.test(away))) {
+        return new Response(JSON.stringify({ error: "invalid home/away" }), { status: 400, headers: corsHeaders(allowOrigin) });
+      }
+    }
+
+    if (!team && mode === "currentweek") {
       // Determines the real current week from CFBD's own calendar of
       // week start/end dates for the season -- comparing today's real
       // date against actual boundaries, rather than a hardcoded
